@@ -1,4 +1,5 @@
 import threading
+import traceback
 from message import Message, MessageType
 from utils import generate_ballot_number
 
@@ -211,7 +212,12 @@ class PaxosNode:
                 while not self.message_queue:
                     self.message_condition.wait()
                 msg = self.message_queue.pop(0)
-            self.process_message(msg)
+            try:
+                self.process_message(msg)
+            except Exception as e:
+                print(f"Exception in message_handler_thread: {e}")
+                traceback.print_exc()
+
 
     def process_message(self, msg):
         if msg.msg_type == MessageType.PREPARE:

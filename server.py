@@ -1,14 +1,11 @@
 import asyncio
-import sys
-import os
 import argparse
-import threading
 import json
 
 from kv_store import KeyValueStore
 from llm_interface import LLMInterface
 from paxos import PaxosNode
-from message import Message, MessageType
+from message import Message
 
 class ServerNode:
     def __init__(self, server_id, peers, network_host='127.0.0.1', network_port=8888):

@@ -10,6 +10,7 @@ class MessageType(Enum):
     ACK = auto()
     TIMEOUT = auto()
     FORWARD = auto()
+    REDIRECT = auto()
 
 class Message:
     def __init__(self, msg_type, sender_id, recipient_id, payload=None):
