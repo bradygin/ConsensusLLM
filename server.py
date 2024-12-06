@@ -3,6 +3,7 @@ import threading
 import sys
 import json
 import time
+import google.generativeai as genai
 
 # Hard-coded server addresses for demonstration
 SERVER_ADDRESSES = {
@@ -14,7 +15,7 @@ SERVER_ADDRESSES = {
 class KeyValueStore:
     def __init__(self):
         self.contexts = {}
-    
+
     def create_context(self, cid):
         if cid not in self.contexts:
             self.contexts[cid] = ""
@@ -43,6 +44,9 @@ class KeyValueStore:
             print(f"view {cid}")
             print(ctx)
 
+    def get_full_context(self, cid):
+        # Return the full context string for cid
+        return self.contexts.get(cid, "")
 
 class PaxosNode:
     def __init__(self, server_id, all_servers, kv_store):
@@ -57,16 +61,19 @@ class PaxosNode:
         self.promised_ballot = None
         self.accepted_ballot = None
         self.accepted_value = None
-        
+
         # For tracking proposals
         self.operation_queue = []
-        
+
         # Map from ballot to collected promises/accepteds
         self.promise_responses = {}
         self.accepted_responses = {}
 
         # Requests forwarded to leader and waiting for ACK
         self.pending_forwards = {}
+
+        # For storing candidate answers: candidate_answers[context_id][server_id] = answer
+        self.candidate_answers = {}
 
         # Thread for periodically checking timeouts
         self.running = True
@@ -101,12 +108,16 @@ class PaxosNode:
             self.submit_operation(f"query {cid} {query_str} {self.server_id}")
         elif cmd == "choose":
             if len(parts) < 3:
-                print("Usage: choose <context_id> <answer_string>")
+                print("Usage: choose <context_id> <candidate_server_id>")
                 return
             cid = parts[1]
-            # Use all parts after cid as the chosen answer
-            chosen_answer = " ".join(parts[2:])
-            self.submit_operation(f"answer {cid} {chosen_answer}")
+            candidate_server_id = parts[2]
+            # Retrieve the candidate answer chosen
+            if cid in self.candidate_answers and candidate_server_id.isdigit() and int(candidate_server_id) in self.candidate_answers[cid]:
+                chosen_answer = self.candidate_answers[cid][int(candidate_server_id)]
+                self.submit_operation(f"answer {cid} {chosen_answer}")
+            else:
+                print("Candidate answer not found for that context and server.")
         elif cmd == "view":
             if len(parts) < 2:
                 print("Usage: view <context_id>")
@@ -122,7 +133,6 @@ class PaxosNode:
             print("Unknown command")
 
     def submit_operation(self, operation):
-        # If not leader and we know the leader, forward the request
         if not self.is_leader and self.known_leader is not None:
             forward_msg = {
                 "type": "FORWARD",
@@ -136,7 +146,6 @@ class PaxosNode:
         else:
             # If we are leader or no known leader, handle accordingly
             if not self.is_leader and self.known_leader is None:
-                # No known leader, try to become one
                 print(f"[Server {self.server_id}] No known leader. Becoming proposer.")
                 self.start_leader_election()
                 self.operation_queue.append(operation)
@@ -193,7 +202,6 @@ class PaxosNode:
                 self.propose_operation(op)
         elif mtype == "ACK":
             print(f"[Server {self.server_id}] Received ACK for operation {msg['operation']} from Leader")
-            # Operation acknowledged, remove from pending_forwards
             if msg["operation"] in self.pending_forwards:
                 del self.pending_forwards[msg["operation"]]
         elif mtype == "PREPARE":
@@ -276,7 +284,7 @@ class PaxosNode:
             print(f"[Server {self.server_id}] Sending DECIDE {bkey} {msg['operation']} to ALL")
             self.broadcast_message(decide_msg)
 
-            # Leader applies operation locally
+            # Leader applies operation locally as well
             self.apply_operation(msg["operation"])
 
     def on_decide(self, msg):
@@ -292,11 +300,33 @@ class PaxosNode:
         elif parts[0] == "query":
             cid = parts[1]
             query_str = " ".join(parts[2:-1]) # last part is originating server
+            originating_server = parts[-1]
             self.kv_store.add_query(cid, query_str)
+
+            # After a query is decided, we call the LLM to get a candidate answer
+            # Build the full context and send to Gemini
+            full_context = self.kv_store.get_full_context(cid)
+            prompt = full_context + "Answer: "
+            try:
+                response = self.llm_generate(prompt)
+                candidate_answer = response.strip()
+                # Store candidate answer
+                if cid not in self.candidate_answers:
+                    self.candidate_answers[cid] = {}
+                self.candidate_answers[cid][self.server_id] = candidate_answer
+                print(f"Context {cid} - Candidate {self.server_id}: {candidate_answer}")
+            except Exception as e:
+                print(f"[Server {self.server_id}] Error querying LLM: {e}")
+
         elif parts[0] == "answer":
             cid = parts[1]
             answer_str = " ".join(parts[2:])
             self.kv_store.add_answer(cid, answer_str)
+
+    def llm_generate(self, prompt):
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        return response.text
 
     def broadcast_message(self, msg):
         for sid, addr in self.all_servers.items():
@@ -328,7 +358,6 @@ class PaxosNode:
     def check_timeouts(self):
         now = time.time()
         timeout_seconds = 5
-        # If no ACK from leader for forwarded operations, timeout
         for op, start_time in list(self.pending_forwards.items()):
             if now - start_time > timeout_seconds:
                 print(f"[Server {self.server_id}] TIMEOUT waiting for ACK on operation {op}")
@@ -361,7 +390,6 @@ class Server:
                 except:
                     continue
 
-
     def handle_client(self, conn, addr):
         data = conn.recv(4096)
         if not data:
@@ -378,6 +406,13 @@ class Server:
 
 
 if __name__ == "__main__":
+    # Load the config file
+    with open("config.json", "r") as f:
+        config = json.load(f)
+
+    # Configure LLM using the key from config.json
+    genai.configure(api_key=config["GEMINI_API_KEY"])
+
     server_id = int(sys.argv[1])
     server = Server(server_id)
     server.start()
