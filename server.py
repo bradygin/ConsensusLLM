@@ -70,7 +70,7 @@ class PaxosNode:
 
         # Thread for periodically checking timeouts
         self.running = True
-        self.timeout_thread = threading.Thread(target=self.check_timeouts_loop)
+        self.timeout_thread = threading.Thread(target=self.check_timeouts_loop, daemon=True)
         self.timeout_thread.start()
 
     def check_timeouts_loop(self):
@@ -117,8 +117,7 @@ class PaxosNode:
             self.kv_store.view_all()
         elif cmd == "exit":
             print("Exiting...")
-            self.stop()
-            sys.exit(0)
+            return "exit"
         else:
             print("Unknown command")
 
@@ -346,7 +345,7 @@ class Server:
         self.running = True
 
     def start(self):
-        t = threading.Thread(target=self.listen)
+        t = threading.Thread(target=self.listen, daemon=True)
         t.start()
 
     def listen(self):
@@ -358,7 +357,7 @@ class Server:
             while self.running:
                 try:
                     conn, addr = s.accept()
-                    threading.Thread(target=self.handle_client, args=(conn, addr)).start()
+                    threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
                 except:
                     continue
 
@@ -375,6 +374,8 @@ class Server:
     def stop(self):
         self.running = False
         self.node.stop()
+        print(f"[Server {self.server_id}] Shutting down.")
+
 
 if __name__ == "__main__":
     server_id = int(sys.argv[1])
@@ -384,10 +385,12 @@ if __name__ == "__main__":
     while True:
         try:
             cmd = input()
-            server.node.handle_user_command(cmd)
+            result = server.node.handle_user_command(cmd)
+            if result == "exit":
+                server.stop()
+                break
         except EOFError:
             break
         except KeyboardInterrupt:
             server.stop()
             sys.exit(0)
-
