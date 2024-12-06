@@ -2,7 +2,6 @@ import threading
 
 class KeyValueStore:
     def __init__(self):
-        # Initialize the store with a thread-safe dictionary
         self.store = {}
         self.lock = threading.Lock()
 
@@ -37,4 +36,4 @@ class KeyValueStore:
 
     def get_all_contexts(self):
         with self.lock:
-            return self.store.copy()
+            return dict(self.store)
