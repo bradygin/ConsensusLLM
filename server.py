@@ -1,174 +1,256 @@
-import sys
 import socket
 import threading
-import argparse
-from kv_store import KeyValueStore
-from llm_interface import LLMInterface
-from paxos import PaxosNode
-from message import Message, MessageType
+import sys
+import json
+import time
 
-class ServerNode:
-    def __init__(self, server_id, peers):
-        self.server_id = str(server_id)
-        self.peers = [str(p) for p in peers if str(p) != self.server_id]
+# Hard-code the server addresses for now. In a real scenario, we might pass these in or discover them dynamically.
+SERVER_ADDRESSES = {
+    1: ('localhost', 5001),
+    2: ('localhost', 5002),
+    3: ('localhost', 5003)
+}
 
-        self.kv_store = KeyValueStore()
-        self.llm = LLMInterface()
+class PaxosNode:
+    def __init__(self, server_id, all_servers):
+        self.server_id = server_id
+        self.all_servers = all_servers
 
-        self.paxos_node = PaxosNode(
-            node_id=self.server_id,
-            peers=self.peers,
-            send_message_func=self.send_message,
-            apply_operation_func=self.apply_operation
-        )
+        # Paxos state placeholders
+        # ballot number structure: (seq_num, pid, op_num)
+        self.current_ballot = (0, self.server_id, 0)
+        self.promised_ballot = None
+        self.accepted_value = None
+        self.accepted_ballot = None
 
-        self.connections = {}
-        self.listen_port = 8000 + int(self.server_id)
+        # Leader and proposer tracking
+        self.is_leader = False
+        self.known_leader = None
+
+        # Operation queue (for leader)
+        self.operation_queue = []
+
+    def handle_message(self, msg):
+        """
+        Handle incoming Paxos messages and respond accordingly.
+        msg is expected to be a dictionary with fields like:
+        {
+          "type": "PREPARE" or "PROMISE" or "ACCEPT" or "ACCEPTED" or "DECIDE",
+          "ballot": (seq_num, pid, op_num),
+          "operation": ... # depends on message
+        }
+        """
+        mtype = msg.get("type")
+
+        if mtype == "PREPARE":
+            self.on_prepare(msg)
+        elif mtype == "PROMISE":
+            self.on_promise(msg)
+        elif mtype == "ACCEPT":
+            self.on_accept(msg)
+        elif mtype == "ACCEPTED":
+            self.on_accepted(msg)
+        elif mtype == "DECIDE":
+            self.on_decide(msg)
+
+    def on_prepare(self, msg):
+        incoming_ballot = tuple(msg["ballot"])
+        print(f"[Server {self.server_id}] Received PREPARE {incoming_ballot} from Server {msg['from']}")
+        
+        # Check if we can promise
+        # For now, let's just promise if this ballot is higher than what we've promised before.
+        if self.promised_ballot is None or incoming_ballot > self.promised_ballot:
+            self.promised_ballot = incoming_ballot
+            # Send PROMISE back
+            response = {
+                "type": "PROMISE",
+                "from": self.server_id,
+                "to": msg["from"],
+                "ballot": incoming_ballot,
+                "accepted_ballot": self.accepted_ballot,
+                "accepted_value": self.accepted_value
+            }
+            self.send_message(response)
+            print(f"[Server {self.server_id}] Sending PROMISE {incoming_ballot} to Server {msg['from']}")
+        else:
+            # ignore prepare if ballot not greater
+            pass
+
+    def on_promise(self, msg):
+        print(f"[Server {self.server_id}] Received PROMISE {msg['ballot']} from Server {msg['from']}")
+        # If this server is trying to become leader, it collects promises.
+        # For now, let's store them and once we have a majority, we send ACCEPT.
+        # We’ll store them in a dictionary keyed by ballot.
+
+        # Create a structure if not present
+        if not hasattr(self, 'promise_responses'):
+            self.promise_responses = {}
+        bkey = tuple(msg["ballot"])
+        if bkey not in self.promise_responses:
+            self.promise_responses[bkey] = []
+        self.promise_responses[bkey].append(msg)
+
+        # Check if we have a majority
+        # With 3 servers, majority = 2
+        if len(self.promise_responses[bkey]) >= 2:
+            # Become leader
+            self.is_leader = True
+            self.known_leader = self.server_id
+            # Now send ACCEPT for the operation (for now let's just say we want to "createContext 1")
+            accept_msg = {
+                "type": "ACCEPT",
+                "from": self.server_id,
+                "to": "ALL",
+                "ballot": bkey,
+                "operation": "createContext 1"
+            }
+            print(f"[Server {self.server_id}] Sending ACCEPT {bkey} createContext 1 to ALL")
+            self.broadcast_message(accept_msg)
+
+    def on_accept(self, msg):
+        print(f"[Server {self.server_id}] Received ACCEPT {msg['ballot']} {msg['operation']} from Server {msg['from']}")
+        incoming_ballot = tuple(msg["ballot"])
+        # Check if we can accept this
+        if self.promised_ballot is None or incoming_ballot >= self.promised_ballot:
+            self.accepted_ballot = incoming_ballot
+            self.accepted_value = msg["operation"]
+            # Send ACCEPTED
+            accepted_msg = {
+                "type": "ACCEPTED",
+                "from": self.server_id,
+                "to": msg["from"],
+                "ballot": incoming_ballot,
+                "operation": msg["operation"]
+            }
+            print(f"[Server {self.server_id}] Sending ACCEPTED {incoming_ballot} {msg['operation']} to Server {msg['from']}")
+            self.send_message(accepted_msg)
+        else:
+            # Ignore if we promised a higher ballot already
+            pass
+
+    def on_accepted(self, msg):
+        print(f"[Server {self.server_id}] Received ACCEPTED {msg['ballot']} {msg['operation']} from Server {msg['from']}")
+        # If leader and we have majority accepted, send DECIDE
+        # Similar to PROMISE logic, we track ACCEPTED responses
+        if not hasattr(self, 'accepted_responses'):
+            self.accepted_responses = {}
+        bkey = tuple(msg["ballot"])
+        if bkey not in self.accepted_responses:
+            self.accepted_responses[bkey] = []
+        self.accepted_responses[bkey].append(msg)
+
+        if len(self.accepted_responses[bkey]) >= 2:
+            # Majority accepted
+            decide_msg = {
+                "type": "DECIDE",
+                "from": self.server_id,
+                "to": "ALL",
+                "ballot": bkey,
+                "operation": msg["operation"]
+            }
+            print(f"[Server {self.server_id}] Sending DECIDE {bkey} {msg['operation']} to ALL")
+            self.broadcast_message(decide_msg)
+
+    def on_decide(self, msg):
+        print(f"[Server {self.server_id}] Received DECIDE {msg['ballot']} {msg['operation']} from Server {msg['from']}")
+        # Apply operation locally
+        # For now, just print that we created the context
+        op = msg["operation"]
+        if op.startswith("createContext"):
+            context_id = op.split()[1]
+            print(f"[Server {self.server_id}] Context {context_id} created!")
+        # Later, we’ll store this in the key-value store.
+
+    def broadcast_message(self, msg):
+        for sid, addr in self.all_servers.items():
+            if sid != self.server_id:
+                self.send_message(msg, sid)
+
+    def send_message(self, msg, sid=None):
+        if sid is None:
+            # if sid not specified, try 'to' field in msg
+            dest = msg.get("to")
+            if dest == "ALL":
+                self.broadcast_message(msg)
+                return
+            else:
+                sid = dest
+        if sid not in self.all_servers:
+            return
+
+        data = json.dumps(msg).encode('utf-8')
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect(self.all_servers[sid])
+            sock.sendall(data)
+        except Exception as e:
+            print(f"[Server {self.server_id}] Error sending message to {sid}: {e}")
+        finally:
+            sock.close()
+
+    def start_leader_election(self):
+        # Just send a PREPARE to try becoming leader
+        ballot = (1, self.server_id, 0)
+        prepare_msg = {
+            "type": "PREPARE",
+            "from": self.server_id,
+            "to": "ALL",
+            "ballot": ballot
+        }
+        print(f"[Server {self.server_id}] Sending PREPARE {ballot} to ALL")
+        self.broadcast_message(prepare_msg)
+
+
+class Server:
+    def __init__(self, server_id):
+        self.server_id = server_id
+        self.all_servers = SERVER_ADDRESSES
+        self.node = PaxosNode(server_id, self.all_servers)
         self.running = True
 
-        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_sock.bind(('127.0.0.1', self.listen_port))
-        self.server_sock.listen(5)
+    def start(self):
+        # Start server socket
+        t = threading.Thread(target=self.listen)
+        t.start()
 
-        threading.Thread(target=self.accept_connections, daemon=True).start()
+    def listen(self):
+        # TCP server
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(self.all_servers[self.server_id])
+            s.listen()
+            print(f"[Server {self.server_id}] Listening on {self.all_servers[self.server_id]} ...")
+            while self.running:
+                conn, addr = s.accept()
+                threading.Thread(target=self.handle_client, args=(conn, addr)).start()
 
-        for p in self.peers:
-            p_port = 8000 + int(p)
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.connect(('127.0.0.1', p_port))
-                self.connections[p] = s
-                s.send(f"ID:{self.server_id}\n".encode('utf-8'))
-                threading.Thread(target=self.receive_loop, args=(p,s), daemon=True).start()
-            except:
-                pass
-
-    def accept_connections(self):
-        while self.running:
-            conn, addr = self.server_sock.accept()
-            data = conn.recv(1024).decode('utf-8').strip()
-            if data.startswith("ID:"):
-                peer_id = data[3:]
-                self.connections[peer_id] = conn
-                threading.Thread(target=self.receive_loop, args=(peer_id, conn), daemon=True).start()
-
-    def receive_loop(self, peer_id, sock):
-        while self.running:
-            try:
-                data = sock.recv(4096)
-                if not data:
-                    break
-                lines = data.decode('utf-8').strip().split('\n')
-                for line in lines:
-                    if not line.strip():
-                        continue
-                    msg = Message.from_json(line.strip())
-                    self.paxos_node.handle_message(msg)
-            except:
-                break
-        if peer_id in self.connections:
-            del self.connections[peer_id]
-
-    def send_message(self, msg):
-        if msg.recipient_id is None:
+    def handle_client(self, conn, addr):
+        data = conn.recv(4096)
+        if not data:
+            conn.close()
             return
-        sock = self.connections.get(msg.recipient_id)
-        if sock:
-            sock.send((msg.to_json() + '\n').encode('utf-8'))
+        msg = json.loads(data.decode('utf-8'))
+        self.node.handle_message(msg)
+        conn.close()
 
-    def apply_operation(self, operation):
-        action = operation.get('action')
-        context_id = operation.get('context_id')
-        if action == 'create_context':
-            print(f"Decided create_context {context_id}")
-            self.kv_store.create_context(context_id)
-        elif action == 'add_query':
-            query = operation.get('query')
-            print(f"Decided add_query {context_id} {query}")
-            self.kv_store.add_query(context_id, query)
-            ctx = self.kv_store.get_context(context_id)
-            ans = self.llm.generate_response(ctx)
-            print("LLM Response:\n", ans)
-        elif action == 'add_answer':
-            answer = operation.get('answer')
-            print(f"Decided add_answer {context_id} {answer}")
-            self.kv_store.add_answer(context_id, answer)
-
-    def run_cli(self):
-        while True:
-            try:
-                cmd = input(f"Server {self.server_id}> ").strip().split()
-                if not cmd:
-                    continue
-                if cmd[0] == 'create':
-                    if len(cmd) != 2:
-                        print("Usage: create <context_id>")
-                        continue
-                    op = {
-                        'action': 'create_context',
-                        'context_id': cmd[1]
-                    }
-                    self.paxos_node.propose(op)
-                elif cmd[0] == 'query':
-                    if len(cmd) < 3:
-                        print("Usage: query <context_id> <query string>")
-                        continue
-                    context_id = cmd[1]
-                    query_str = ' '.join(cmd[2:])
-                    op = {
-                        'action': 'add_query',
-                        'context_id': context_id,
-                        'query': query_str
-                    }
-                    self.paxos_node.propose(op)
-                elif cmd[0] == 'choose':
-                    if len(cmd) != 3:
-                        print("Usage: choose <context_id> <response_number>")
-                        continue
-                    context_id = cmd[1]
-                    answer_num = cmd[2]
-                    op = {
-                        'action': 'add_answer',
-                        'context_id': context_id,
-                        'answer': f"Selected Answer from server {answer_num}"
-                    }
-                    self.paxos_node.propose(op)
-                elif cmd[0] == 'view':
-                    if len(cmd) != 2:
-                        print("Usage: view <context_id>")
-                        continue
-                    ctx = self.kv_store.get_context(cmd[1])
-                    if ctx is None:
-                        print(f"Context {cmd[1]} does not exist.")
-                    else:
-                        print(f"Context {cmd[1]}:")
-                        print(ctx)
-                elif cmd[0] == 'viewall':
-                    all_ctx = self.kv_store.get_all_contexts()
-                    print("All Contexts:")
-                    for cid, ctext in all_ctx.items():
-                        print(cid + ":")
-                        print(ctext)
-                elif cmd[0] == 'exit':
-                    break
-                else:
-                    print("Unknown command.")
-            except (EOFError, KeyboardInterrupt):
-                break
+    def stop(self):
         self.running = False
-        self.server_sock.close()
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--id', type=int, required=True)
-    parser.add_argument('--peers', nargs='+', type=int, required=True)
-    args = parser.parse_args()
-
-    node = ServerNode(args.id, args.peers)
-
-    node.run_cli()
 
 if __name__ == "__main__":
-    main()
+    server_id = int(sys.argv[1])
+    server = Server(server_id)
+    server.start()
+
+    time.sleep(2)
+
+    # If this is server 3, start the leader election process after a short wait
+    if server_id == 3:
+        time.sleep(1)
+        server.node.start_leader_election()
+
+    # Keep the server running
+    while True:
+        cmd = input().strip()
+        if cmd == "exit":
+            server.stop()
+            break

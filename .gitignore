@@ -8,3 +8,4 @@ __pycache__/
 *.log
 config.json
 dev.sh
+.vscode
