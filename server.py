@@ -277,6 +277,9 @@ class PaxosNode:
             print(f"[Server {self.server_id}] Sending DECIDE {bkey} {msg['operation']} to ALL")
             self.broadcast_message(decide_msg)
 
+            # Leader applies operation locally
+            self.apply_operation(msg["operation"])
+
     def on_decide(self, msg):
         print(f"[Server {self.server_id}] Received DECIDE {msg['ballot']} {msg['operation']} from Server {msg['from']}")
         op = msg["operation"]
