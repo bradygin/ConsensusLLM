@@ -214,6 +214,19 @@ class PaxosNode:
             self.on_accepted(msg)
         elif mtype == "DECIDE":
             self.on_decide(msg)
+        elif mtype == "CANDIDATE_ANSWER":
+            # The server that originated the query receives candidate answers
+            cid = msg["cid"]
+            candidate_answer = msg["candidate_answer"]
+            from_sid = msg["from"]
+
+            if cid not in self.candidate_answers:
+                self.candidate_answers[cid] = {}
+
+            self.candidate_answers[cid][from_sid] = candidate_answer
+
+            # Check if we have all 3 answers now
+            self.check_and_print_all_candidates(cid)
 
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
@@ -301,20 +314,36 @@ class PaxosNode:
             cid = parts[1]
             query_str = " ".join(parts[2:-1]) # last part is originating server
             originating_server = parts[-1]
+            origin_id = int(originating_server)
             self.kv_store.add_query(cid, query_str)
 
             # After a query is decided, we call the LLM to get a candidate answer
-            # Build the full context and send to Gemini
             full_context = self.kv_store.get_full_context(cid)
             prompt = full_context + "Answer: "
             try:
                 response = self.llm_generate(prompt)
                 candidate_answer = response.strip()
-                # Store candidate answer
+                # Store candidate answer locally
                 if cid not in self.candidate_answers:
                     self.candidate_answers[cid] = {}
                 self.candidate_answers[cid][self.server_id] = candidate_answer
-                print(f"Context {cid} - Candidate {self.server_id}: {candidate_answer}")
+                # Removed the print statement here to avoid duplicate printing
+                # print(f"Context {cid} - Candidate {self.server_id}: {candidate_answer}")
+
+                # If we are not the leader, send our candidate answer to the leader
+                if self.server_id != self.known_leader:
+                    msg = {
+                        "type": "CANDIDATE_ANSWER",
+                        "from": self.server_id,
+                        "to": origin_id,
+                        "cid": cid,
+                        "candidate_answer": candidate_answer
+                    }
+                    self.send_message(msg, origin_id)
+                else:
+                    # If this server originated the query, check if we can print all candidates
+                    self.check_and_print_all_candidates(cid)
+
             except Exception as e:
                 print(f"[Server {self.server_id}] Error querying LLM: {e}")
 
@@ -322,6 +351,7 @@ class PaxosNode:
             cid = parts[1]
             answer_str = " ".join(parts[2:])
             self.kv_store.add_answer(cid, answer_str)
+
 
     def llm_generate(self, prompt):
         model = genai.GenerativeModel("gemini-1.5-flash")
@@ -364,6 +394,15 @@ class PaxosNode:
                 del self.pending_forwards[op]
                 self.start_leader_election()
                 self.operation_queue.append(op)
+
+    def check_and_print_all_candidates(self, cid):
+        # If we have candidate answers from all servers (3 servers total)
+        if cid in self.candidate_answers and len(self.candidate_answers[cid]) == 3:
+            # Sort by server_id just to have them in a nice order
+            for sid in sorted(self.candidate_answers[cid].keys()):
+                ans = self.candidate_answers[cid][sid]
+                print(f"\nContext {cid} - Candidate {sid}: {ans}")
+            print()  # blank line after printing all candidates
 
 class Server:
     def __init__(self, server_id):
