@@ -11,7 +11,6 @@ SERVER_ADDRESSES = {
     2: ('localhost', 5002),
     3: ('localhost', 5003)
 }
-
 class KeyValueStore:
     def __init__(self):
         self.contexts = {}
