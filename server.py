@@ -226,6 +226,10 @@ class PaxosNode:
 
             # Check if we have all 3 answers now
             self.check_and_print_all_candidates(cid)
+        elif mtype == "LEADER_ANNOUNCE":
+            leader_id = msg["leader_id"]
+            self.known_leader = leader_id
+            print(f"[Server {self.server_id}] Updated known leader to Server {leader_id}")
 
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
@@ -256,6 +260,14 @@ class PaxosNode:
             self.is_leader = True
             self.known_leader = self.server_id
             print(f"[Server {self.server_id}] Became leader with ballot {bkey}")
+            #Broadcast leader to all servers
+            leader_announce_msg = {
+                "type": "LEADER_ANNOUNCE",
+                "from": self.server_id,
+                "to": "ALL",
+                "leader_id": self.server_id
+            }
+            self.broadcast_message(leader_announce_msg)
             # Propose any queued operations
             for op in self.operation_queue:
                 self.propose_operation(op)
