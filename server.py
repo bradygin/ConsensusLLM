@@ -60,6 +60,7 @@ class PaxosNode:
         self.promised_ballot = None
         self.accepted_ballot = None
         self.accepted_value = None
+        self.applied_operations_count = 0
 
         # For tracking proposals
         self.operation_queue = []
@@ -234,7 +235,12 @@ class PaxosNode:
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
         print(f"[Server {self.server_id}] Received PREPARE {incoming_ballot} from Server {msg['from']}")
-        
+        incoming_op_num = incoming_ballot[2]
+
+        # If we've applied more operations than the incoming op_num, we should not promise.
+        if self.applied_operations_count > incoming_op_num:
+            return
+
         if self.promised_ballot is None or incoming_ballot > self.promised_ballot:
             self.promised_ballot = incoming_ballot
             response = {
@@ -328,7 +334,7 @@ class PaxosNode:
             origin_id = int(originating_server)
             self.kv_store.add_query(cid, query_str)
 
-            # After a query is decided, we call the LLM to get a candidate answer
+            # Generate LLM answer
             full_context = self.kv_store.get_full_context(cid)
             prompt = full_context + "Answer: "
             try:
@@ -338,11 +344,9 @@ class PaxosNode:
                 if cid not in self.candidate_answers:
                     self.candidate_answers[cid] = {}
                 self.candidate_answers[cid][self.server_id] = candidate_answer
-                # Removed the print statement here to avoid duplicate printing
-                # print(f"Context {cid} - Candidate {self.server_id}: {candidate_answer}")
 
-                # If we are not the leader, send our candidate answer to the leader
-                if self.server_id != self.known_leader:
+                # If we are NOT the origin, send candidate answer to origin
+                if self.server_id != origin_id:
                     msg = {
                         "type": "CANDIDATE_ANSWER",
                         "from": self.server_id,
@@ -352,7 +356,7 @@ class PaxosNode:
                     }
                     self.send_message(msg, origin_id)
                 else:
-                    # If this server originated the query, check if we can print all candidates
+                    # This server originated the query, check if we can print all candidates
                     self.check_and_print_all_candidates(cid)
 
             except Exception as e:
@@ -363,6 +367,7 @@ class PaxosNode:
             answer_str = " ".join(parts[2:])
             self.kv_store.add_answer(cid, answer_str)
 
+        self.applied_operations_count += 1
 
     def llm_generate(self, prompt):
         model = genai.GenerativeModel("gemini-1.5-flash")

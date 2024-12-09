@@ -7,5 +7,5 @@ __pycache__/
 .env
 *.log
 config.json
-dev.sh
+debug.sh
 .vscode
