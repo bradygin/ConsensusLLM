@@ -278,15 +278,16 @@ class PaxosNode:
             query_str = " ".join(parts[2:-1])
             originating_server = parts[-1]
             origin_id = int(originating_server)
+            if cid in self.candidate_answers:
+                self.candidate_answers[cid].clear()
+            else:
+                self.candidate_answers[cid] = {}
             self.kv_store.add_query(cid, query_str)
-
             full_context = self.kv_store.get_full_context(cid)
             prompt = full_context + "Answer: "
             try:
                 response = self.llm_generate(prompt)
                 candidate_answer = response.strip()
-                if cid not in self.candidate_answers:
-                    self.candidate_answers[cid] = {}
                 self.candidate_answers[cid][self.server_id] = candidate_answer
 
                 if self.server_id != origin_id:
