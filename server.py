@@ -6,8 +6,8 @@ import google.generativeai as genai
 
 from kv_store import KeyValueStore
 from paxos_node import PaxosNode
+from network_server import NetworkServer
 
-# Hard-coded server addresses for demonstration
 SERVER_ADDRESSES = {
     1: ('localhost', 5001),
     2: ('localhost', 5002),
@@ -19,8 +19,26 @@ class Server:
         self.server_id = server_id
         self.all_servers = SERVER_ADDRESSES
         self.kv_store = KeyValueStore()
-        self.node = PaxosNode(server_id, self.all_servers, self.kv_store)
+        self.network_server = NetworkServer(self.all_servers)
+        # pass a send_func callback to PaxosNode
+        self.node = PaxosNode(server_id, self.all_servers, self.kv_store, self.network_server, self.send_func)
         self.running = True
+
+    def send_func(self, dest, data):
+        # Actually send data over the socket (no delay or checks here)
+        if not self.network_server.is_node_alive(dest):
+            # If node dead, don't send
+            return
+        addr = self.all_servers[dest]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        try:
+            sock.connect(addr)
+            sock.sendall(data)
+        except Exception as e:
+            print(f"[Server {self.server_id}] Error sending message to {dest}: {e}")
+        finally:
+            sock.close()
 
     def start(self):
         t = threading.Thread(target=self.listen, daemon=True)
@@ -53,6 +71,37 @@ class Server:
         self.node.stop()
         print(f"[Server {self.server_id}] Shutting down.")
 
+    def handle_user_command(self, cmd):
+        parts = cmd.strip().split()
+        if len(parts) == 0:
+            return None
+        if parts[0] == "failLink":
+            # failLink <src> <dest>
+            if len(parts) < 3:
+                print("Usage: failLink <src> <dest>")
+                return None
+            src = int(parts[1])
+            dest = int(parts[2])
+            self.network_server.fail_link(src, dest)
+        elif parts[0] == "fixLink":
+            # fixLink <src> <dest>
+            if len(parts) < 3:
+                print("Usage: fixLink <src> <dest>")
+                return None
+            src = int(parts[1])
+            dest = int(parts[2])
+            self.network_server.fix_link(src, dest)
+        elif parts[0] == "failNode":
+            # failNode <nodeNum>
+            if len(parts) < 2:
+                print("Usage: failNode <nodeNum>")
+                return None
+            node_num = int(parts[1])
+            self.network_server.fail_node(node_num)
+        else:
+            return self.node.handle_user_command(cmd)
+        return None
+
 if __name__ == "__main__":
     # Load the config file
     with open("config.json", "r") as f:
@@ -68,7 +117,7 @@ if __name__ == "__main__":
     while True:
         try:
             cmd = input()
-            result = server.node.handle_user_command(cmd)
+            result = server.handle_user_command(cmd)
             if result == "exit":
                 server.stop()
                 break

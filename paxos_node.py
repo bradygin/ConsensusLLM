@@ -4,10 +4,12 @@ import threading
 import google.generativeai as genai
 
 class PaxosNode:
-    def __init__(self, server_id, all_servers, kv_store):
+    def __init__(self, server_id, all_servers, kv_store, network_server, send_func):
         self.server_id = server_id
         self.all_servers = all_servers
         self.kv_store = kv_store
+        self.network_server = network_server
+        self.send_func = send_func
 
         self.op_num = 0
         self.is_leader = False
@@ -316,7 +318,7 @@ class PaxosNode:
     def broadcast_message(self, msg):
         for sid, addr in self.all_servers.items():
             if sid != self.server_id:
-                self.send_message(msg, sid)
+                self.network_server.send_message(self.server_id, sid, json.dumps(msg).encode('utf-8'), self.send_func)
 
     def send_message(self, msg, sid=None):
         if sid is None:
@@ -328,22 +330,13 @@ class PaxosNode:
                 sid = dest
         if sid not in self.all_servers:
             return
-
         data = json.dumps(msg).encode('utf-8')
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        try:
-            sock.connect(self.all_servers[sid])
-            sock.sendall(data)
-        except Exception as e:
-            print(f"[Server {self.server_id}] Error sending message to {sid}: {e}")
-        finally:
-            sock.close()
+        # Use network_server to send message with delay and link checks
+        self.network_server.send_message(self.server_id, sid, data, self.send_func)
 
     def check_timeouts(self):
         now = time.time()
-        timeout_seconds = 5
+        timeout_seconds = 10
         for op, start_time in list(self.pending_forwards.items()):
             if now - start_time > timeout_seconds:
                 print(f"[Server {self.server_id}] TIMEOUT waiting for ACK on operation {op}")
