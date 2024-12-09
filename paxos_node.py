@@ -34,6 +34,7 @@ class PaxosNode:
         self.accepted_value = None
         self.applied_operations_count = 0
         self.highest_seen_ballot = (0, 0, 0)
+        self.did_leader_discovery = False
 
         # For tracking proposals
         self.operation_queue = []
@@ -106,6 +107,19 @@ class PaxosNode:
             print("Unknown command")
 
     def submit_operation(self, operation):
+        if not self.did_leader_discovery:
+            print(f"[Server {self.server_id}] Discovering current leader...")
+            discover_msg = {
+                "type": "LEADER_DISCOVER",
+                "from": self.server_id,
+                "to": "ALL"
+            }
+            self.broadcast_message(discover_msg)
+            # Wait a bit for responses
+            time.sleep(4)
+            
+            self.did_leader_discovery = True
+
         if not self.is_leader and self.known_leader is not None:
             forward_msg = {
                 "type": "FORWARD",
@@ -227,6 +241,15 @@ class PaxosNode:
             leader_id = msg["leader_id"]
             self.known_leader = leader_id
             print(f"[Server {self.server_id}] Updated known leader to Server {leader_id}")
+        elif mtype == "LEADER_DISCOVER":
+            if self.known_leader is not None:
+                response = {
+                    "type": "LEADER_ANNOUNCE",
+                    "from": self.server_id,
+                    "to": msg["from"],
+                    "leader_id": self.known_leader
+                }
+                self.send_message(response, msg["from"])
 
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
