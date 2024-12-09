@@ -73,6 +73,7 @@ class PaxosNode:
             if cid in self.candidate_answers and candidate_server_id.isdigit() and int(candidate_server_id) in self.candidate_answers[cid]:
                 chosen_answer = self.candidate_answers[cid][int(candidate_server_id)]
                 self.submit_operation(f"answer {cid} {chosen_answer}")
+                self.candidate_answers[cid].clear()
             else:
                 print("Candidate answer not found for that context and server.")
         elif cmd == "view":
