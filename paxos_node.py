@@ -129,7 +129,22 @@ class PaxosNode:
         if self.current_ballot is None:
             self.current_ballot = (1, self.server_id, self.op_num)
 
-        ballot = (self.current_ballot[0], self.current_ballot[1], self.op_num)
+        self.op_num = self.current_ballot[2]
+        ballot = self.current_ballot
+
+        if ballot not in self.accepted_responses:
+            self.accepted_responses[ballot] = []
+
+        self_accepted = {
+            "type": "ACCEPTED",
+            "from": self.server_id,
+            "to": "ALL",
+            "ballot": ballot,
+            "operation": operation
+        }
+
+        self.accepted_responses[ballot].append(self_accepted)
+
         print(f"[Server {self.server_id}] Sending ACCEPT {ballot} {operation} to ALL")
         accept_msg = {
             "type": "ACCEPT",
@@ -139,11 +154,27 @@ class PaxosNode:
             "operation": operation
         }
         self.broadcast_message(accept_msg)
-        self.op_num += 1
+
+        self.current_ballot = (ballot[0], ballot[1], ballot[2] + 1)
+        self.op_num = self.current_ballot[2]
 
     def start_leader_election(self):
         next_seq = self.highest_seen_ballot[0] + 1
         self.current_ballot = (next_seq, self.server_id, self.applied_operations_count)
+
+        # Clear any old promise responses for this ballot
+        bkey = self.current_ballot
+        self.promise_responses[bkey] = []
+        
+        # Add our own promise to our response set
+        self_promise = {
+            "type": "PROMISE",
+            "from": self.server_id,
+            "ballot": self.current_ballot,
+            "accepted_ballot": self.accepted_ballot,
+            "accepted_value": self.accepted_value
+        }
+        self.promise_responses[bkey].append(self_promise)
 
         print(f"[Server {self.server_id}] Sending PREPARE {self.current_ballot} to ALL")
         prepare_msg = {
@@ -226,7 +257,8 @@ class PaxosNode:
             self.promise_responses[bkey] = []
         self.promise_responses[bkey].append(msg)
 
-        if len(self.promise_responses[bkey]) >= 2:
+        # Only become leader once
+        if not self.is_leader and len(self.promise_responses[bkey]) >= 2:  # Add check for not already leader
             self.is_leader = True
             self.known_leader = self.server_id
             print(f"[Server {self.server_id}] Became leader with ballot {bkey}")
@@ -237,6 +269,8 @@ class PaxosNode:
                 "leader_id": self.server_id
             }
             self.broadcast_message(leader_announce_msg)
+
+            # Process queued operations
             for op in self.operation_queue:
                 self.propose_operation(op)
             self.operation_queue.clear()
@@ -266,9 +300,20 @@ class PaxosNode:
         bkey = tuple(msg["ballot"])
         if bkey not in self.accepted_responses:
             self.accepted_responses[bkey] = []
+        
+        # Check if we already have this response
+        for resp in self.accepted_responses[bkey]:
+            if resp["from"] == msg["from"]:
+                return  # Don't process duplicate ACCEPTED messages
+        
         self.accepted_responses[bkey].append(msg)
 
-        if len(self.accepted_responses[bkey]) >= 2:
+        if not hasattr(self, 'decided_ballots'):
+            self.decided_ballots = set()
+
+        # Only proceed if we haven't already decided this ballot and we have majority
+        if bkey not in self.decided_ballots and len(self.accepted_responses[bkey]) >= 2:
+            self.decided_ballots.add(bkey)
             decide_msg = {
                 "type": "DECIDE",
                 "from": self.server_id,
@@ -286,6 +331,15 @@ class PaxosNode:
         self.apply_operation(op)
 
     def apply_operation(self, op):
+        if not hasattr(self, 'applied_ops'):
+            self.applied_ops = set()
+        
+        # Create a unique key for this operation
+        op_key = f"{op}_{self.op_num}"
+        if op_key in self.applied_ops:
+            return  # Skip if we've already applied this operation
+            
+        self.applied_ops.add(op_key)
         parts = op.split()
         if parts[0] == "createContext":
             cid = parts[1]
