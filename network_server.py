@@ -1,69 +1,107 @@
-import time
+import socket
 import threading
+import json
 
-class NetworkServer:
+class CentralNetworkServer:
     def __init__(self, all_servers):
-        # all_servers is a dict: {node_id: (host, port)}
         self.all_servers = all_servers
-        # link_states will store tuples (src, dest) as keys, True/False as values
-        # True means link is active, False means link is failed.
         self.link_states = {}
-        # node_states will store node_id: True/False
-        # True means node is alive, False means node is failed.
         self.node_states = {}
 
-        # Initialize all links as active and all nodes as alive.
+        # Initialize states
         for src in all_servers:
             self.node_states[src] = True
             for dest in all_servers:
                 if src != dest:
-                    # ensure a consistent key ordering
                     edge = tuple(sorted((src, dest)))
                     self.link_states[edge] = True
 
-    def fail_link(self, src, dest):
-        edge = tuple(sorted((src, dest)))
-        if edge in self.link_states:
-            self.link_states[edge] = False
-            print(f"Link between {src} and {dest} failed.")
+    def handle_command(self, cmd_str):
+        parts = cmd_str.strip().split()
+        if len(parts) == 0:
+            return {"error": "No command given"}
+
+        cmd = parts[0]
+        if cmd == "failNode":
+            if len(parts) < 2:
+                return {"error": "Usage: failNode <nodeNum>"}
+            node = int(parts[1])
+            if node in self.node_states:
+                self.node_states[node] = False
+                return {"status": f"Node {node} failed."}
+            else:
+                return {"error": f"No such node {node}"}
+
+        elif cmd == "failLink":
+            if len(parts) < 3:
+                return {"error": "Usage: failLink <src> <dest>"}
+            src = int(parts[1])
+            dest = int(parts[2])
+            edge = tuple(sorted((src, dest)))
+            if edge in self.link_states:
+                self.link_states[edge] = False
+                return {"status": f"Link between {src} and {dest} failed."}
+            else:
+                return {"error": f"No link known between {src} and {dest}."}
+
+        elif cmd == "fixLink":
+            if len(parts) < 3:
+                return {"error": "Usage: fixLink <src> <dest>"}
+            src = int(parts[1])
+            dest = int(parts[2])
+            edge = tuple(sorted((src, dest)))
+            if edge in self.link_states:
+                self.link_states[edge] = True
+                return {"status": f"Link between {src} and {dest} fixed."}
+            else:
+                return {"error": f"No link known between {src} and {dest}."}
+
+        elif cmd == "is_node_alive":
+            if len(parts) < 2:
+                return {"error": "Usage: is_node_alive <node>"}
+            node = int(parts[1])
+            alive = self.node_states.get(node, False)
+            return {"alive": alive}
+
+        elif cmd == "is_link_active":
+            if len(parts) < 3:
+                return {"error": "Usage: is_link_active <src> <dest>"}
+            src = int(parts[1])
+            dest = int(parts[2])
+            edge = tuple(sorted((src, dest)))
+            alive = (self.node_states.get(src, False) and 
+                     self.node_states.get(dest, False) and 
+                     self.link_states.get(edge, False))
+            return {"active": alive}
+
         else:
-            print(f"No link known between {src} and {dest}.")
+            return {"error": "Unknown command"}
 
-    def fix_link(self, src, dest):
-        edge = tuple(sorted((src, dest)))
-        if edge in self.link_states:
-            self.link_states[edge] = True
-            print(f"Link between {src} and {dest} fixed.")
-        else:
-            print(f"No link known between {src} and {dest}.")
+    def start(self, host='localhost', port=6000):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind((host, port))
+        s.listen()
+        print(f"[NetworkServer] Listening on {(host, port)} ...")
+        while True:
+            conn, addr = s.accept()
+            threading.Thread(target=self.client_handler, args=(conn, addr)).start()
 
-    def fail_node(self, node):
-        if node in self.node_states:
-            self.node_states[node] = False
-            print(f"Node {node} failed.")
-        else:
-            print(f"No such node {node}.")
-
-    def is_link_active(self, src, dest):
-        # Check if both nodes are alive and link is active
-        if not self.node_states.get(src, False):
-            return False
-        if not self.node_states.get(dest, False):
-            return False
-        edge = tuple(sorted((src, dest)))
-        return self.link_states.get(edge, False)
-
-    def is_node_alive(self, node):
-        return self.node_states.get(node, False)
-
-    def send_message(self, src, dest, data, send_func):
-        # Check link
-        if not self.is_link_active(src, dest):
-            # If link is down or node dead, do nothing
+    def client_handler(self, conn, addr):
+        data = conn.recv(4096)
+        if not data:
+            conn.close()
             return
+        cmd_str = data.decode('utf-8')
+        response = self.handle_command(cmd_str)
+        conn.sendall(json.dumps(response).encode('utf-8'))
+        conn.close()
 
-        def delayed_send():
-            time.sleep(3)
-            send_func(dest, data)
-        t = threading.Thread(target=delayed_send)
-        t.start()
+if __name__ == "__main__":
+    # Hard-coded server addresses known here too
+    SERVER_ADDRESSES = {
+        1: ('localhost', 5001),
+        2: ('localhost', 5002),
+        3: ('localhost', 5003)
+    }
+    network_server = CentralNetworkServer(SERVER_ADDRESSES)
+    network_server.start()

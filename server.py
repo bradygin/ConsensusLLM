@@ -2,33 +2,47 @@ import sys
 import json
 import threading
 import socket
+import time
 import google.generativeai as genai
 
 from kv_store import KeyValueStore
 from paxos_node import PaxosNode
-from network_server import NetworkServer
 
+# Known addresses of servers
 SERVER_ADDRESSES = {
     1: ('localhost', 5001),
     2: ('localhost', 5002),
     3: ('localhost', 5003)
 }
 
+def network_server_request(cmd):
+    """Send a command to the central network server and return the response as a dict."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    try:
+        s.connect(('localhost', 6000))
+        s.sendall(cmd.encode('utf-8'))
+        data = s.recv(4096)
+        s.close()
+        if not data:
+            return {"error": "No response from network server"}
+        return json.loads(data.decode('utf-8'))
+    except Exception as e:
+        return {"error": str(e)}
+
 class Server:
     def __init__(self, server_id):
         self.server_id = server_id
         self.all_servers = SERVER_ADDRESSES
         self.kv_store = KeyValueStore()
-        self.network_server = NetworkServer(self.all_servers)
+        
         # pass a send_func callback to PaxosNode
-        self.node = PaxosNode(server_id, self.all_servers, self.kv_store, self.network_server, self.send_func)
+        self.node = PaxosNode(server_id, self.all_servers, self.kv_store, self.send_func)
         self.running = True
 
-    def send_func(self, dest, data):
-        # Actually send data over the socket (no delay or checks here)
-        if not self.network_server.is_node_alive(dest):
-            # If node dead, don't send
-            return
+    def delayed_send(self, dest, data):
+        # This function runs in a separate thread to introduce a 3-second delay before sending.
+        time.sleep(3)
         addr = self.all_servers[dest]
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
@@ -39,6 +53,23 @@ class Server:
             print(f"[Server {self.server_id}] Error sending message to {dest}: {e}")
         finally:
             sock.close()
+
+    def send_func(self, dest, data):
+        """Check node/link states and send data with a 3-second delay."""
+        # Check node and link states before sending
+        resp_node = network_server_request(f"is_node_alive {dest}")
+        if not resp_node.get("alive", False):
+            # node dead, do nothing
+            return
+
+        resp_link = network_server_request(f"is_link_active {self.server_id} {dest}")
+        if not resp_link.get("active", False):
+            # link down, do nothing
+            return
+
+        # If we reach here, node and link are active
+        # Introduce the 3-second delay before actually sending
+        threading.Thread(target=self.delayed_send, args=(dest, data), daemon=True).start()
 
     def start(self):
         t = threading.Thread(target=self.listen, daemon=True)
@@ -75,30 +106,15 @@ class Server:
         parts = cmd.strip().split()
         if len(parts) == 0:
             return None
-        if parts[0] == "failLink":
-            # failLink <src> <dest>
-            if len(parts) < 3:
-                print("Usage: failLink <src> <dest>")
-                return None
-            src = int(parts[1])
-            dest = int(parts[2])
-            self.network_server.fail_link(src, dest)
-        elif parts[0] == "fixLink":
-            # fixLink <src> <dest>
-            if len(parts) < 3:
-                print("Usage: fixLink <src> <dest>")
-                return None
-            src = int(parts[1])
-            dest = int(parts[2])
-            self.network_server.fix_link(src, dest)
-        elif parts[0] == "failNode":
-            # failNode <nodeNum>
-            if len(parts) < 2:
-                print("Usage: failNode <nodeNum>")
-                return None
-            node_num = int(parts[1])
-            self.network_server.fail_node(node_num)
+        if parts[0] in ["failLink", "fixLink", "failNode"]:
+            # Forward these commands to the global network server
+            resp = network_server_request(cmd)
+            if "error" in resp:
+                print(resp["error"])
+            elif "status" in resp:
+                print(resp["status"])
         else:
+            # Other commands go to PaxosNode
             return self.node.handle_user_command(cmd)
         return None
 

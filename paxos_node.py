@@ -2,13 +2,27 @@ import time
 import json
 import threading
 import google.generativeai as genai
+import socket
+
+def network_server_request(cmd):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2)
+    try:
+        s.connect(('localhost', 6000))
+        s.sendall(cmd.encode('utf-8'))
+        data = s.recv(4096)
+        s.close()
+        if not data:
+            return {"error": "No response from network server"}
+        return json.loads(data.decode('utf-8'))
+    except Exception as e:
+        return {"error": str(e)}
 
 class PaxosNode:
-    def __init__(self, server_id, all_servers, kv_store, network_server, send_func):
+    def __init__(self, server_id, all_servers, kv_store, send_func):
         self.server_id = server_id
         self.all_servers = all_servers
         self.kv_store = kv_store
-        self.network_server = network_server
         self.send_func = send_func
 
         self.op_num = 0
@@ -23,17 +37,17 @@ class PaxosNode:
         # For tracking proposals
         self.operation_queue = []
 
-        # Map from ballot to collected promises/accepteds
+        # Maps from ballot to collected promises/accepteds
         self.promise_responses = {}
         self.accepted_responses = {}
 
         # Requests forwarded to leader and waiting for ACK
         self.pending_forwards = {}
 
-        # For storing candidate answers: candidate_answers[context_id][server_id] = answer
+        # candidate_answers[context_id][server_id] = answer
         self.candidate_answers = {}
 
-        # Thread for periodically checking timeouts
+        # Timeouts thread
         self.running = True
         self.timeout_thread = threading.Thread(target=self.check_timeouts_loop, daemon=True)
         self.timeout_thread.start()
@@ -100,7 +114,6 @@ class PaxosNode:
             }
             self.send_message(forward_msg, self.known_leader)
             # start timer
-            import time
             self.pending_forwards[operation] = time.time()
         else:
             if not self.is_leader and self.known_leader is None:
@@ -116,6 +129,7 @@ class PaxosNode:
             self.current_ballot = (1, self.server_id, self.op_num)
 
         ballot = (self.current_ballot[0], self.current_ballot[1], self.op_num)
+        print(f"[Server {self.server_id}] Sending ACCEPT {ballot} {operation} to ALL")
         accept_msg = {
             "type": "ACCEPT",
             "from": self.server_id,
@@ -123,7 +137,6 @@ class PaxosNode:
             "ballot": ballot,
             "operation": operation
         }
-        print(f"[Server {self.server_id}] Sending ACCEPT {ballot} {operation} to ALL")
         self.broadcast_message(accept_msg)
         self.op_num += 1
 
@@ -320,21 +333,26 @@ class PaxosNode:
     def broadcast_message(self, msg):
         for sid, addr in self.all_servers.items():
             if sid != self.server_id:
-                self.network_server.send_message(self.server_id, sid, json.dumps(msg).encode('utf-8'), self.send_func)
+                self.send_message(msg, sid)
 
     def send_message(self, msg, sid=None):
+        # Before actually sending, check link and node states via network_server_request in send_func
         if sid is None:
             dest = msg.get("to")
             if dest == "ALL":
-                self.broadcast_message(msg)
+                for sid2, addr2 in self.all_servers.items():
+                    if sid2 != self.server_id:
+                        self.send_message(msg, sid2)
                 return
             else:
                 sid = dest
+
         if sid not in self.all_servers:
             return
+
         data = json.dumps(msg).encode('utf-8')
-        # Use network_server to send message with delay and link checks
-        self.network_server.send_message(self.server_id, sid, data, self.send_func)
+        # send_func checks node and link states automatically
+        self.send_func(sid, data)
 
     def check_timeouts(self):
         now = time.time()
