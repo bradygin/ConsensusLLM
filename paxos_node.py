@@ -33,6 +33,7 @@ class PaxosNode:
         self.accepted_ballot = None
         self.accepted_value = None
         self.applied_operations_count = 0
+        self.highest_seen_ballot = (0, 0, 0)
 
         # For tracking proposals
         self.operation_queue = []
@@ -141,10 +142,8 @@ class PaxosNode:
         self.op_num += 1
 
     def start_leader_election(self):
-        if self.current_ballot is None:
-            self.current_ballot = (1, self.server_id, 0)
-        else:
-            self.current_ballot = (self.current_ballot[0] + 1, self.server_id, 0)
+        next_seq = self.highest_seen_ballot[0] + 1
+        self.current_ballot = (next_seq, self.server_id, self.applied_operations_count)
 
         print(f"[Server {self.server_id}] Sending PREPARE {self.current_ballot} to ALL")
         prepare_msg = {
@@ -201,11 +200,12 @@ class PaxosNode:
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
         print(f"[Server {self.server_id}] Received PREPARE {incoming_ballot} from Server {msg['from']}")
-        incoming_op_num = incoming_ballot[2]
+        
+        # Update highest seen ballot
+        if incoming_ballot > self.highest_seen_ballot:
+            self.highest_seen_ballot = incoming_ballot
 
-        if self.applied_operations_count > incoming_op_num:
-            return
-
+        # We only check if the incoming ballot is higher than promised_ballot
         if self.promised_ballot is None or incoming_ballot > self.promised_ballot:
             self.promised_ballot = incoming_ballot
             response = {
@@ -244,6 +244,10 @@ class PaxosNode:
     def on_accept(self, msg):
         print(f"[Server {self.server_id}] Received ACCEPT {msg['ballot']} {msg['operation']} from Server {msg['from']}")
         incoming_ballot = tuple(msg["ballot"])
+
+        if incoming_ballot > self.highest_seen_ballot:
+            self.highest_seen_ballot = incoming_ballot
+
         if self.promised_ballot is None or incoming_ballot >= self.promised_ballot:
             self.accepted_ballot = incoming_ballot
             self.accepted_value = msg["operation"]
