@@ -111,7 +111,7 @@ class PaxosNode:
 
     def submit_operation(self, operation):
         if not self.did_leader_discovery:
-            print(f"[Server {self.server_id}] Discovering current leader...")
+            # print(f"[Server {self.server_id}] Discovering current leader...")
             discover_msg = {
                 "type": "LEADER_DISCOVER",
                 "from": self.server_id,
@@ -245,7 +245,7 @@ class PaxosNode:
         elif mtype == "LEADER_ANNOUNCE":
             leader_id = msg["leader_id"]
             self.known_leader = leader_id
-            print(f"[Server {self.server_id}] Updated known leader to Server {leader_id}")
+            # print(f"[Server {self.server_id}] Updated known leader to Server {leader_id}")
         elif mtype == "LEADER_DISCOVER":
             if self.known_leader is not None:
                 response = {
@@ -289,7 +289,7 @@ class PaxosNode:
         if not self.is_leader and len(self.promise_responses[bkey]) >= 2:  # Add check for not already leader
             self.is_leader = True
             self.known_leader = self.server_id
-            print(f"[Server {self.server_id}] Became leader with ballot {bkey}")
+            # print(f"[Server {self.server_id}] Became leader with ballot {bkey}")
             leader_announce_msg = {
                 "type": "LEADER_ANNOUNCE",
                 "from": self.server_id,
