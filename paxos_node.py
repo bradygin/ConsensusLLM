@@ -35,6 +35,7 @@ class PaxosNode:
         self.applied_operations_count = 0
         self.highest_seen_ballot = (0, 0, 0)
         self.did_leader_discovery = False
+        self.last_printed_state = {}
 
         # For tracking proposals
         self.operation_queue = []
@@ -90,6 +91,8 @@ class PaxosNode:
                 chosen_answer = self.candidate_answers[cid][int(candidate_server_id)]
                 self.submit_operation(f"answer {cid} {chosen_answer}")
                 self.candidate_answers[cid].clear()
+                if cid in self.last_printed_state:
+                    del self.last_printed_state[cid]
             else:
                 print("Candidate answer not found for that context and server.")
         elif cmd == "view":
@@ -372,9 +375,8 @@ class PaxosNode:
             query_str = " ".join(parts[2:-1])
             originating_server = parts[-1]
             origin_id = int(originating_server)
-            if cid in self.candidate_answers:
-                self.candidate_answers[cid].clear()
-            else:
+
+            if cid not in self.candidate_answers:
                 self.candidate_answers[cid] = {}
             self.kv_store.add_query(cid, query_str)
             full_context = self.kv_store.get_full_context(cid)
@@ -384,7 +386,12 @@ class PaxosNode:
                 candidate_answer = response.strip()
                 self.candidate_answers[cid][self.server_id] = candidate_answer
 
-                if self.server_id != origin_id:
+                # Only check/print if we're the originating server
+                if self.server_id == origin_id:
+                    # Store our own answer but don't print yet
+                    pass
+                else:
+                    # Send to originating server
                     msg = {
                         "type": "CANDIDATE_ANSWER",
                         "from": self.server_id,
@@ -393,8 +400,6 @@ class PaxosNode:
                         "candidate_answer": candidate_answer
                     }
                     self.send_message(msg, origin_id)
-                else:
-                    self.check_and_print_all_candidates(cid)
 
             except Exception as e:
                 print(f"[Server {self.server_id}] Error querying LLM: {e}")
@@ -446,8 +451,20 @@ class PaxosNode:
                 self.operation_queue.append(op)
 
     def check_and_print_all_candidates(self, cid):
-        if cid in self.candidate_answers and len(self.candidate_answers[cid]) == 3:
-            for sid in sorted(self.candidate_answers[cid].keys()):
-                ans = self.candidate_answers[cid][sid]
-                print(f"\nContext {cid} - Candidate {sid}: {ans}")
-            print()
+        if cid in self.candidate_answers and len(self.candidate_answers[cid]) > 0:
+            # Create a snapshot of current answers
+            current_state = frozenset(
+                (sid, ans) 
+                for sid, ans in sorted(self.candidate_answers[cid].items())
+            )
+            
+            # Only print if this state hasn't been printed before
+            if cid not in self.last_printed_state or current_state != self.last_printed_state[cid]:
+                print(f"\nCandidate answers for context {cid}:")
+                for sid in sorted(self.candidate_answers[cid].keys()):
+                    ans = self.candidate_answers[cid][sid]
+                    print(f"Context {cid} - Candidate {sid}: {ans}")
+                print()
+                
+                # Update the last printed state
+                self.last_printed_state[cid] = current_state
