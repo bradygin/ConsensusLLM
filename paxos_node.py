@@ -234,12 +234,14 @@ class PaxosNode:
             cid = msg["cid"]
             candidate_answer = msg["candidate_answer"]
             from_sid = msg["from"]
+            query_key = msg.get("query_key")  # Get the query key
 
             if cid not in self.candidate_answers:
                 self.candidate_answers[cid] = {}
 
             self.candidate_answers[cid][from_sid] = candidate_answer
-            self.check_and_print_all_candidates(cid)
+            if query_key:  # Only check and print if we have the query key
+                self.check_and_print_all_candidates(cid, query_key)
         elif mtype == "LEADER_ANNOUNCE":
             leader_id = msg["leader_id"]
             self.known_leader = leader_id
@@ -378,6 +380,27 @@ class PaxosNode:
 
             if cid not in self.candidate_answers:
                 self.candidate_answers[cid] = {}
+            else:
+                # Clear previous answers for new query
+                self.candidate_answers[cid].clear()
+                
+            # Count currently alive servers for this specific query
+            if not hasattr(self, 'expected_answers_per_query'):
+                self.expected_answers_per_query = {}
+                
+            # Create unique key for this query using context and query string
+            query_key = f"{cid}_{query_str}"
+            
+            # Count alive servers for this specific query
+            alive_count = 0
+            for sid in self.all_servers:
+                resp = network_server_request(f"is_node_alive {sid}")
+                if resp.get("alive", False):
+                    alive_count += 1
+                    
+            # Store expected count for this specific query
+            self.expected_answers_per_query[query_key] = alive_count
+
             self.kv_store.add_query(cid, query_str)
             full_context = self.kv_store.get_full_context(cid)
             prompt = full_context + "Answer: "
@@ -386,20 +409,18 @@ class PaxosNode:
                 candidate_answer = response.strip()
                 self.candidate_answers[cid][self.server_id] = candidate_answer
 
-                # Only check/print if we're the originating server
-                if self.server_id == origin_id:
-                    # Store our own answer but don't print yet
-                    pass
-                else:
-                    # Send to originating server
+                if self.server_id != origin_id:
                     msg = {
                         "type": "CANDIDATE_ANSWER",
                         "from": self.server_id,
                         "to": origin_id,
                         "cid": cid,
-                        "candidate_answer": candidate_answer
+                        "candidate_answer": candidate_answer,
+                        "query_key": query_key  # Pass the query key
                     }
                     self.send_message(msg, origin_id)
+                else:
+                    self.check_and_print_all_candidates(cid, query_key)
 
             except Exception as e:
                 print(f"[Server {self.server_id}] Error querying LLM: {e}")
@@ -450,21 +471,18 @@ class PaxosNode:
                 self.start_leader_election()
                 self.operation_queue.append(op)
 
-    def check_and_print_all_candidates(self, cid):
-        if cid in self.candidate_answers and len(self.candidate_answers[cid]) > 0:
-            # Create a snapshot of current answers
-            current_state = frozenset(
-                (sid, ans) 
-                for sid, ans in sorted(self.candidate_answers[cid].items())
-            )
+    def check_and_print_all_candidates(self, cid, query_key):
+        if not hasattr(self, 'expected_answers_per_query') or query_key not in self.expected_answers_per_query:
+            return
+
+        expected_count = self.expected_answers_per_query[query_key]
+        
+        if cid in self.candidate_answers and len(self.candidate_answers[cid]) == expected_count:
+            print(f"\nCandidate answers for context {cid}:")
+            for sid in sorted(self.candidate_answers[cid].keys()):
+                ans = self.candidate_answers[cid][sid]
+                print(f"Context {cid} - Candidate {sid}: {ans}")
+            print()
             
-            # Only print if this state hasn't been printed before
-            if cid not in self.last_printed_state or current_state != self.last_printed_state[cid]:
-                print(f"\nCandidate answers for context {cid}:")
-                for sid in sorted(self.candidate_answers[cid].keys()):
-                    ans = self.candidate_answers[cid][sid]
-                    print(f"Context {cid} - Candidate {sid}: {ans}")
-                print()
-                
-                # Update the last printed state
-                self.last_printed_state[cid] = current_state
+            # Clean up after printing
+            del self.expected_answers_per_query[query_key]
