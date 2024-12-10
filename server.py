@@ -42,7 +42,7 @@ class Server:
 
     def delayed_send(self, dest, data):
         # This function runs in a separate thread to introduce a 3-second delay before sending.
-        time.sleep(3)
+        time.sleep(3) # Uncomment this line to introduce the delay for demo purposes
         addr = self.all_servers[dest]
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
