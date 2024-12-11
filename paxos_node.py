@@ -55,6 +55,25 @@ class PaxosNode:
         self.timeout_thread = threading.Thread(target=self.check_timeouts_loop, daemon=True)
         self.timeout_thread.start()
 
+        self.request_recovery()
+
+    def request_recovery(self):
+        # print(f"[Server {self.server_id}] Requesting recovery data from other servers")
+        recovery_request = {
+            "type": "RECOVERY_REQUEST",
+            "from": self.server_id,
+            "to": "ALL"
+        }
+        self.broadcast_message(recovery_request)
+        # Also ask for current leader
+        discover_msg = {
+            "type": "LEADER_DISCOVER",
+            "from": self.server_id,
+            "to": "ALL"
+        }
+        self.broadcast_message(discover_msg)
+        time.sleep(2)  # Give time for responses
+
     def check_timeouts_loop(self):
         while self.running:
             self.check_timeouts()
@@ -112,15 +131,23 @@ class PaxosNode:
     def submit_operation(self, operation):
         if not self.did_leader_discovery:
             # print(f"[Server {self.server_id}] Discovering current leader...")
+            self.request_recovery()
+            self.did_leader_discovery = True
             discover_msg = {
                 "type": "LEADER_DISCOVER",
                 "from": self.server_id,
                 "to": "ALL"
             }
             self.broadcast_message(discover_msg)
-            # Wait a bit for responses
-            time.sleep(4)
             
+            # Add recovery request
+            recovery_request = {
+                "type": "RECOVERY_REQUEST",
+                "from": self.server_id,
+                "to": "ALL"
+            }
+            self.broadcast_message(recovery_request)
+            time.sleep(4)
             self.did_leader_discovery = True
 
         if not self.is_leader and self.known_leader is not None:
@@ -176,6 +203,15 @@ class PaxosNode:
         self.op_num = self.current_ballot[2]
 
     def start_leader_election(self):
+        # First request recovery in case we're behind
+        recovery_request = {
+            "type": "RECOVERY_REQUEST",
+            "from": self.server_id,
+            "to": "ALL"
+        }
+        self.broadcast_message(recovery_request)
+        time.sleep(2)  # Give time for recovery
+
         next_seq = self.highest_seen_ballot[0] + 1
         self.current_ballot = (next_seq, self.server_id, self.applied_operations_count)
 
@@ -255,6 +291,29 @@ class PaxosNode:
                     "leader_id": self.known_leader
                 }
                 self.send_message(response, msg["from"])
+        elif mtype == "RECOVERY_REQUEST":
+            # Only respond if we have some state
+            if len(self.kv_store.contexts) > 0:
+                print(f"[Server {self.server_id}] Sending recovery data to Server {msg['from']}")
+                recovery_msg = {
+                    "type": "RECOVERY_DATA",
+                    "from": self.server_id,
+                    "to": msg["from"],
+                    "contexts": self.kv_store.contexts,
+                    "seq_num": self.highest_seen_ballot[0],
+                    "op_num": self.applied_operations_count,
+                    "known_leader": self.known_leader
+                }
+                self.send_message(recovery_msg, msg["from"])
+        elif mtype == "RECOVERY_DATA":
+            print(f"[Server {self.server_id}] Received recovery data from Server {msg['from']}")
+            # Only accept recovery if we have no data
+            if len(self.kv_store.contexts) == 0:
+                self.kv_store.contexts = msg["contexts"]
+                self.highest_seen_ballot = (msg["seq_num"], 0, 0)
+                self.applied_operations_count = msg["op_num"]
+                self.known_leader = msg["known_leader"]
+                print(f"[Server {self.server_id}] Recovered {len(self.kv_store.contexts)} contexts, op_num={self.applied_operations_count}")
 
     def on_prepare(self, msg):
         incoming_ballot = tuple(msg["ballot"])
