@@ -7,10 +7,10 @@ SESSION_NAME="distributed_system"
 VENV_PATH="./venv/bin/activate"
 
 commands=(
-  "source $VENV_PATH && python3 network_server.py"
-  "source $VENV_PATH && python3 server.py 1"
-  "source $VENV_PATH && python3 server.py 2"
-  "source $VENV_PATH && python3 server.py 3"
+  "source $VENV_PATH && python3 src/network_server.py"
+  "source $VENV_PATH && python3 src/server.py 1"
+  "source $VENV_PATH && python3 src/server.py 2"
+  "source $VENV_PATH && python3 src/server.py 3"
 )
 
 # Create a new tmux session and run the first command (network server)
