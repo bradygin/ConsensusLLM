@@ -2,8 +2,10 @@
 
 A distributed, fault-tolerant system that integrates Large Language Models using Multi-Paxos consensus protocol. ConsensusLLM ensures uninterrupted AI services by maintaining consistency across multiple nodes while gracefully handling server failures and network partitions.
 
-![Network Topology](assets/network_topology.png)
-*Network topology: Three Paxos nodes (P1, P2, P3) connected through a central network server that forwards requests with a 3-second message delay.*
+<div align="center">
+  <img src="assets/network_topology.png" width="400" alt="Network Topology" style="background-color: white; padding: 20px; border-radius: 8px; margin: 20px 0;">
+  <p><em>Network topology: Three Paxos nodes (P1, P2, P3) connected through a central network server that forwards requests with a 3-second message delay.</em></p>
+</div>
 
 ## Overview
 
