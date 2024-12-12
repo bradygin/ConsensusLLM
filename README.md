@@ -2,6 +2,9 @@
 
 A distributed, fault-tolerant system that integrates Large Language Models using Multi-Paxos consensus protocol. ConsensusLLM ensures uninterrupted AI services by maintaining consistency across multiple nodes while gracefully handling server failures and network partitions.
 
+![Network Topology](assets/network_topology.png)
+*Network topology: Three Paxos nodes (P1, P2, P3) connected through a central network server that forwards requests with a 3-second message delay.*
+
 ## Overview
 
 ConsensusLLM uses distributed systems principles to provide robust, fault-tolerant conversational AI services. Built on Google's Gemini LLM, the system ensures continuity of service even when individual nodes fail or network issues occur.
